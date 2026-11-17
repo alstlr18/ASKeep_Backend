@@ -72,6 +72,8 @@ public class SecurityConfig {
         config.setAllowedOrigins(List.of(origins.split(",")));
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         config.setAllowedHeaders(List.of("Authorization", "Content-Type"));
+        // 자료 다운로드 시 프론트가 파일명을 읽을 수 있게 노출 (기본은 브라우저가 숨김)
+        config.setExposedHeaders(List.of("Content-Disposition"));
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", config);
         return source;

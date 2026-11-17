@@ -145,6 +145,8 @@ Spring 재배포가 필요합니다. 운영 DB 스키마를 수동 관리한다�
 | 회원 탈퇴 | `DELETE /api/v1/users/me` `{"password"}` | 로그인 | 200 |
 | 비밀번호 재설정 코드 요청 | `POST /api/v1/users/auth/password-reset/request` `{"email"}` | 누구나 | 200 |
 | 비밀번호 재설정 | `POST /api/v1/users/auth/password-reset/confirm` `{"email","code","newPassword"}` | 누구나 | 200 |
+| 발표자료 원본 다운로드 | `GET /api/v1/materials/{materialId}/download` (PDF 바이너리) | 종료된 세션: 로그인한 누구나 / 그 전: 발표자·참여자 | 200 |
+| 자료 목록 (권한 변경) | `GET /api/v1/sessions/{sessionId}/materials` | 종료된 세션: 로그인한 누구나 / 그 전: 발표자·참여자 | 200 |
 
 비밀번호 변경·재설정·탈퇴 시 그 사용자의 기존 토큰은 모든 기기에서 무효가 됩니다. 재설정 메일은 `.env`의 `MAIL_*`(SMTP)를 쓰고, 비워 두면 backend 로그에 인증코드가 출력됩니다.
 

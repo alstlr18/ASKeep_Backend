@@ -69,8 +69,9 @@ public class MaterialService {
         return material;
     }
 
+    /** 종료된 세션(아카이브)은 로그인한 누구나, 그 외에는 host·참여자만 */
     public org.springframework.data.domain.Page<Material> list(Long sessionId, Long userId, org.springframework.data.domain.Pageable pageable) {
-        sessionAccess.requireMember(sessionId, userId);
+        sessionAccess.requireMemberOrArchived(sessionId, userId);
         return materialRepository.findBySession_IdOrderByIdDesc(sessionId, pageable);
     }
 
@@ -106,6 +107,17 @@ public class MaterialService {
         } catch (RestClientException exception) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "페이지 이미지를 가져오지 못했습니다.", exception);
         }
+    }
+
+    /**
+     * 원본 PDF 다운로드용. 종료된 세션(아카이브)은 로그인한 누구나, 아직 끝나지 않은 세션은 host·참여자만 받는다.
+     * AI 처리 상태(실패 등)와 관계없이 원본 파일이 남아 있으면 내려준다.
+     */
+    public Material downloadable(Long id, Long userId) {
+        Material material = find(id);
+        sessionAccess.requireMemberOrArchived(material.getSession().getId(), userId);
+        requirePdf(material);
+        return material;
     }
 
     private void requirePdf(Material material) {

@@ -280,10 +280,11 @@
 | 상세 | `GET /materials/{materialId}` | 없음 | 200, `MaterialResponse` |
 | 슬라이드 목록·페이지 수 | `GET /materials/{materialId}/pages` | 없음 | 200, `MaterialPagesResponse` |
 | 페이지 이미지 | `GET /materials/{materialId}/pages/{pageNumber}/image` | 없음 | 200, PNG 바이너리 |
+| 원본 PDF 다운로드 | `GET /materials/{materialId}/download` | 없음 | 200, PDF 바이너리 |
 | 삭제 | `DELETE /materials/{materialId}` | 없음 | 200, 데이터 없음 |
 | AI 처리 재시도 | `POST /materials/{materialId}/retry` | 없음 | 202, `MaterialResponse` |
 
-업로드 파일은 최대 50 MiB의 PDF여야 하며, 파일 이름 확장자 `.pdf`와 파일 시작 부분의 `%PDF-`를 확인합니다. 업로드·삭제·재시도는 발표자만, 목록·상세 조회는 발표자와 참여자가 사용할 수 있습니다. 처리 중인 자료는 삭제할 수 없고, AI 처리 재시도는 `FAILED` 상태에서만 가능합니다.
+업로드 파일은 최대 50 MiB의 PDF여야 하며, 파일 이름 확장자 `.pdf`와 파일 시작 부분의 `%PDF-`를 확인합니다. 업로드·삭제·재시도는 발표자만, 목록·상세 조회는 발표자와 참여자가 사용할 수 있습니다(단, 종료된 세션의 목록은 로그인한 누구나 조회 가능). 처리 중인 자료는 삭제할 수 없고, AI 처리 재시도는 `FAILED` 상태에서만 가능합니다.
 
 `MaterialResponse`(`data`):
 
@@ -301,7 +302,40 @@
 }
 ```
 
-`fileSize` 단위는 바이트입니다. `status` 값은 `PENDING`, `PROCESSING`, `COMPLETED`, `FAILED`입니다. 목록은 ID 내림차순입니다. 파일 다운로드 API는 구현되어 있지 않습니다.
+`fileSize` 단위는 바이트입니다. `status` 값은 `PENDING`, `PROCESSING`, `COMPLETED`, `FAILED`입니다. 목록은 ID 내림차순입니다.
+
+### 원본 PDF 다운로드 (아카이브)
+
+`GET /api/v1/materials/{materialId}/download` — 발표자가 올린 원본 PDF를 그대로 내려받습니다.
+
+- **종료된(`ENDED`) 세션의 자료는 로그인한 누구나** 받을 수 있습니다 (세션에 참여하지 않았어도 가능, 아카이브 공개).
+- 시작 전(`READY`)·진행 중(`ONGOING`) 세션의 자료는 **발표자·참여자만** 받을 수 있습니다. 입장 코드 없이 진행 중 자료가 공개되지 않도록 하기 위함입니다.
+- 같은 규칙으로 **자료 목록**(`GET /sessions/{sessionId}/materials`)도 종료된 세션은 로그인한 누구나 조회할 수 있습니다. 미참여자는 `GET /sessions?status=ENDED`로 종료 세션을 찾고 → 자료 목록에서 `id`를 얻어 → 다운로드하면 됩니다.
+- 자료 상세·슬라이드 뷰어·질문·요약 등 나머지 API는 종료 후에도 기존처럼 발표자·참여자 전용입니다.
+- AI 처리 상태(`FAILED` 포함)와 관계없이 원본 PDF가 서버에 남아 있으면 내려줍니다. AI 서버를 호출하지 않습니다.
+- 성공 응답은 `{success,data}`가 아닌 **`Content-Type: application/pdf` 바이너리**입니다.
+- 파일명은 `Content-Disposition` 헤더에 담기며, 한글 파일명은 `filename*=UTF-8''...`(퍼센트 인코딩) 형식입니다. 이 헤더는 CORS로 노출되어 있어 프론트에서 읽을 수 있습니다.
+- `<a href>`에는 Bearer 헤더를 넣을 수 없으므로 `fetch`로 받아 Blob으로 저장하세요.
+
+```js
+const response = await fetch(`${SPRING_BASE_URL}/api/v1/materials/7/download`, {
+  headers: { Authorization: `Bearer ${accessToken}` },
+});
+if (!response.ok) throw new Error(`다운로드 실패: ${response.status}`);
+// 파일명: filename*=UTF-8''<인코딩된 이름> 우선, 없으면 기본값
+const disposition = response.headers.get('Content-Disposition') ?? '';
+const match = disposition.match(/filename\*=UTF-8''([^;]+)/);
+const fileName = match ? decodeURIComponent(match[1]) : 'material.pdf';
+
+const url = URL.createObjectURL(await response.blob());
+const a = document.createElement('a');
+a.href = url;
+a.download = fileName;
+a.click();
+URL.revokeObjectURL(url);
+```
+
+오류: 토큰 없음·유효하지 않음 401, 종료 전 세션의 미참여자 403, 없는 자료 404, 서버에서 원본 PDF 유실 410. 오류 본문은 기존 JSON 오류 형식입니다.
 
 ### 슬라이드 뷰어
 

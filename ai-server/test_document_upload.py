@@ -5,6 +5,9 @@ from pathlib import Path
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+from concurrent.futures import ThreadPoolExecutor
+
+import numpy as np
 
 import pymupdf as fitz
 from fastapi.testclient import TestClient
@@ -18,6 +21,61 @@ with patch("huggingface_hub.snapshot_download", return_value="/unused-model"), \
 
 
 class DocumentUploadTest(unittest.TestCase):
+    def setUp(self):
+        module._embed_token_ids.cache_clear()
+
+    def test_identical_model_inputs_reuse_inference_without_sharing_mutable_vectors(self):
+        hidden = np.arange(768, dtype=np.float32).reshape(1, 2, 384) + 1
+        with patch.object(module, "tokenize_text", return_value=np.array([[0, 71, 2]], dtype=np.int64)), \
+             patch.object(module.model, "run", return_value=[hidden]) as run:
+            first = module.embed_text("repeated slide")
+            expected = first.to_list()
+            first.to_numpy()[0] = 99
+            again = module.embed_text("repeated slide")
+            self.assertEqual(again.to_list(), expected)
+            self.assertEqual(run.call_count, 1, "identical tokens must not run the model twice")
+
+    def test_embedding_cache_is_bounded_and_distinguishes_query_from_passage(self):
+        hidden = np.ones((1, 3, 384), dtype=np.float32)
+        def tokens(text):
+            return np.array([[0, int(text.split(": ")[1]), 2 if text.startswith("query:") else 3]], dtype=np.int64)
+        with patch.object(module, "tokenize_text", side_effect=tokens), \
+             patch.object(module.model, "run", return_value=[hidden]) as run:
+            module.embed_text("query: 0")
+            module.embed_text("passage: 0")
+            self.assertEqual(run.call_count, 2)
+            for i in range(1, 129):
+                module.embed_text(f"passage: {i}")
+            self.assertEqual(module._embed_token_ids.cache_info().currsize, 128)
+            module.embed_text("query: 0")
+            self.assertEqual(run.call_count, 131, "evicted inputs must be recomputed")
+
+    def test_concurrent_identical_embeddings_share_one_inference(self):
+        with patch.object(module, "tokenize_text", return_value=np.array([[0, 81, 2]], dtype=np.int64)), \
+             patch.object(module.model, "run", return_value=[np.ones((1, 3, 384), dtype=np.float32)]) as run:
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                vectors = list(pool.map(module.embed_text, ["same slide"] * 16))
+            self.assertEqual(run.call_count, 1)
+            self.assertTrue(all(vector.to_list() == vectors[0].to_list() for vector in vectors))
+
+    def test_chunk_storage_batches_inserts_and_keeps_page_metadata(self):
+        chunks = [
+            {"materialId": 7, "sessionId": 3, "chunkIndex": i, "pageNumber": i + 1, "text": f"slide {i}"}
+            for i in range(20)
+        ]
+        vectors = [f"vector-{i}" for i in range(20)]
+        with patch.object(module, "create_document_embedding", return_value=vectors) as embed, \
+             patch.object(module, "get_connection") as connect:
+            conn = connect.return_value.__enter__.return_value
+            cursor = conn.cursor.return_value.__enter__.return_value
+            module.save_chunks(chunks, 7)
+            embed.assert_called_once_with([chunk["text"] for chunk in chunks])
+            cursor.execute.assert_called_once()
+            cursor.executemany.assert_called_once()
+            params = list(cursor.executemany.call_args.args[1])
+            self.assertEqual(params, [(7, 3, i, f"slide {i}", i + 1, f"vector-{i}") for i in range(20)])
+            conn.commit.assert_called_once()
+
     def test_evidence_threshold_skips_openai_and_filters_context(self):
         with TestClient(module.app) as client, patch.object(module, "search_similar_chunks") as search, \
              patch.object(module, "generate_answer", return_value="자료 기반 답변") as generate:

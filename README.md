@@ -58,6 +58,20 @@ Spring에는 재시도용 원본 PDF가 필요하므로, 재시작 후에도 재
 로컬 메모리 회귀 확인: `OPENAI_API_KEY=memory-check-not-a-real-key ai-server/.venv/bin/python ai-server/check_embedding_memory.py`
 이 검사는 시작 및 샘플 임베딩의 최대 RSS가 512MiB 미만인지 확인하며, Render Linux에서의 실측은 별도로 확인해야 합니다.
 
+같은 토큰 입력의 임베딩은 프로세스 메모리에 최대 128개만 캐시합니다. 반복 문단과 최근 자료 재업로드에서는 계산을 재사용하며,
+처음 보는 조각은 기존과 동일하게 계산합니다. 모델, 384차원 벡터, 검색 임계값은 유지하고 기존 DB 재분석은 필요하지 않습니다.
+캐시는 서버 재시작 시 사라지고 128개를 넘으면 오래 사용하지 않은 입력부터 제거합니다.
+Render Logs의 `document_processed`에는 `embedding_seconds`와 `db_seconds`가 기록되어 어느 단계가 느린지 확인할 수 있습니다.
+임베딩 최적화는 FastAPI 재배포 후 반영됩니다. 반복 내용이 없는 새 자료의 계산 시간은 무료 서버의 CPU 성능에 제한됩니다.
+
+실제 모델로 계산 결과와 시간을 비교하려면 아래 명령을 실행합니다. DB와 OpenAI API는 호출하지 않습니다.
+
+```bash
+OPENAI_API_KEY=benchmark-not-a-real-key ai-server/.venv/bin/python ai-server/check_embedding_performance.py
+# 실제 발표자료로 측정
+OPENAI_API_KEY=benchmark-not-a-real-key ai-server/.venv/bin/python ai-server/check_embedding_performance.py --pdf /path/to/slides.pdf
+```
+
 ## AI 답변 근거 판단
 
 AI 서버에서 검색 상위 5개 조각 중 similarity **0.8 이상**인 조각만 OPENAI에 전달합니다.

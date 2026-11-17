@@ -26,3 +26,7 @@ assert len(documents) == 4 and all(len(vector.to_list()) == 384 for vector in do
 assert len(query.to_list()) == 384
 assert all(abs(sum(x * x for x in vector.to_list()) - 1) < 1e-5 for vector in [*documents, query])
 check_budget("embedding")
+for i in range(140):
+    main.create_query_embedding(f"캐시 메모리 검사 {i}: 발표 자료의 핵심 내용은 무엇인가요?")
+assert main._embed_token_ids.cache_info().currsize == 128
+check_budget("full embedding cache")

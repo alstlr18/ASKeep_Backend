@@ -2,7 +2,7 @@ fastapi
 python-multipart
 uvicorn
 pymupdf
-psycopg[binary]
+psycopg[binary]>=3.1
 pgvector
 onnxruntime==1.30.0
 sentencepiece

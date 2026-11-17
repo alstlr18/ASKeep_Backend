@@ -6,6 +6,9 @@ import os
 from dotenv import load_dotenv
 from pathlib import Path
 from threading import Lock
+from functools import lru_cache
+import logging
+from time import perf_counter
 
 # Load ONNX before the HTTP/PDF clients to avoid overlapping startup allocations.
 load_dotenv()
@@ -39,6 +42,7 @@ from typing import List, Optional
 
 MIN_SIMILARITY = 0.8
 pdf_render_lock = Lock()
+logger = logging.getLogger("uvicorn.error")
 
 
 class QuestionRequest(BaseModel):
@@ -89,7 +93,9 @@ def save_chunks(chunks, material_id: int):
         for chunk in chunks
     ]
 
+    started = perf_counter()
     embeddings = create_document_embedding(texts)
+    embedded = perf_counter()
 
     with get_connection() as conn:
         with conn.cursor() as cursor:
@@ -97,29 +103,30 @@ def save_chunks(chunks, material_id: int):
                 "DELETE FROM material_chunks WHERE material_id = %s",
                 (material_id,)
             )
-            for chunk, embedding in zip(chunks, embeddings):
-                cursor.execute(
-                    """
-                    INSERT INTO material_chunks (
-                        material_id,
-                        session_id,
-                        chunk_index,
-                        content,
-                        page_number,
-                        embedding
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        chunk["materialId"],
-                        chunk["sessionId"],
-                        chunk["chunkIndex"],
-                        chunk["text"],
-                        chunk["pageNumber"],
-                        embedding
-                    )
+            cursor.executemany(
+                """
+                INSERT INTO material_chunks (
+                    material_id,
+                    session_id,
+                    chunk_index,
+                    content,
+                    page_number,
+                    embedding
                 )
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                [(
+                    chunk["materialId"],
+                    chunk["sessionId"],
+                    chunk["chunkIndex"],
+                    chunk["text"],
+                    chunk["pageNumber"],
+                    embedding
+                ) for chunk, embedding in zip(chunks, embeddings)]
+            )
         conn.commit()
+    logger.info("document_processed material_id=%s chunks=%s embedding_seconds=%.3f db_seconds=%.3f",
+                material_id, len(chunks), embedded - started, perf_counter() - embedded)
 
 # XLM-R의 SentencePiece ID를 E5 vocabulary에 맞추고 512토큰으로 제한한다.
 def tokenize_text(text: str):
@@ -133,13 +140,20 @@ def tokenize_text(text: str):
     return np.array([[0, *ids[:510], 2]], dtype=np.int64)
 
 
+@lru_cache(maxsize=128)
+def _embed_token_ids(token_ids: bytes):
+    ids = np.frombuffer(token_ids, dtype=np.int64).reshape(1, -1)
+    hidden = model.run(None, {"input_ids": ids, "attention_mask": np.ones_like(ids),
+                              "token_type_ids": np.zeros_like(ids)})[0]
+    embedding = hidden[0].mean(axis=0)
+    return (embedding / max(float(np.linalg.norm(embedding)), 1e-12)).tobytes()
+
+
 def embed_text(text: str):
+    ids = tokenize_text(text)
     with embedding_lock:
-        ids = tokenize_text(text)
-        hidden = model.run(None, {"input_ids": ids, "attention_mask": np.ones_like(ids),
-                                  "token_type_ids": np.zeros_like(ids)})[0]
-        embedding = hidden[0].mean(axis=0)
-        return Vector((embedding / max(float(np.linalg.norm(embedding)), 1e-12)).tolist())
+        # Cache only bounded token/vector bytes; the lock also prevents duplicate concurrent inference.
+        return Vector(np.frombuffer(_embed_token_ids(ids.tobytes()), dtype=np.float32))
 
 
 #embedding 함수
